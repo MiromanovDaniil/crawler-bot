@@ -42,17 +42,40 @@ class DatabaseHandler:
 
     def save_to_db(self, user_id: int, dataframe: pd.DataFrame) -> bool:
         """
-        Сохраняет данные из DataFrame в таблицу 'sites'.
-        :param user_id: ID пользователя.
-        :param dataframe: DataFrame с данными для сохранения.
-        :return: True, если данные успешно сохранены, иначе False.
+        Сохраняет данные из DataFrame в таблицу 'sites' только для новых уникальных записей.
+        Уникальность определяется по комбинации user_id и url.
         """
         conn = self.create_connection()
         try:
+            if dataframe.empty:
+                logging.info("Нет данных для сохранения")
+                return True
+
             dataframe['user_id'] = user_id
             dataframe = dataframe[['user_id', 'title', 'url', 'xpath', 'parsed_price']]
-            dataframe.to_sql('sites', conn, if_exists='append', index=False)
+            
+            urls = dataframe['url'].unique().tolist()
+            
+            query = f"""
+                SELECT url 
+                FROM sites 
+                WHERE user_id = ? 
+                AND url IN ({','.join(['?']*len(urls))})
+            """
+            params = (user_id, *urls)
+            
+            existing_urls = pd.read_sql_query(query, conn, params=params)['url'].tolist()
+            
+            new_data = dataframe[~dataframe['url'].isin(existing_urls)]
+            
+            if new_data.empty:
+                logging.info("No new records to save")
+                return True
+
+            new_data.to_sql('sites', conn, if_exists='append', index=False)
+            logging.info(f"Saved new records: {len(new_data)}")
             return True
+
         except Exception as e:
             logging.error(f"Database error: {e}")
             return False
@@ -69,7 +92,7 @@ class DatabaseHandler:
             df = pd.read_sql_query("SELECT * FROM sites", conn)
             return df
         except Exception as e:
-            logging.error(f"Ошибка при чтении данных: {e}")
+            logging.error(f"Error reading data: {e}")
             return None
         finally:
             conn.close()
@@ -89,7 +112,7 @@ class DatabaseHandler:
             conn.commit()
             return True
         except Exception as e:
-            logging.error(f"Ошибка при удалении данных: {e}")
+            logging.error(f"Error deleting data: {e}")
             return False
         finally:
             conn.close()

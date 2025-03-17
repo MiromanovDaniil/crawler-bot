@@ -4,6 +4,7 @@ import random
 import logging
 import threading
 from typing import Optional, List, Dict, Any
+import re
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -88,7 +89,6 @@ class PriceScraper:
                 self.driver.execute_script("arguments[0].scrollIntoView(true);", price_element)
                 time.sleep(random.uniform(1, 2))
 
-                # Attempt to retrieve text using multiple attributes if necessary
                 price_text = price_element.text.strip() or \
                             price_element.get_attribute("innerText").strip() or \
                             price_element.get_attribute("textContent").strip()
@@ -102,40 +102,70 @@ class PriceScraper:
                 attempt += 1
                 logging.error(f"Error scraping {url} on attempt {attempt}: {str(e)}")
                 self._take_screenshot(f"error_{int(time.time())}")
-                time.sleep(2 ** attempt)  # Exponential backoff before retry
+                time.sleep(2 ** attempt)  
 
         return None
 
 
     def _clean_price(self, text: str) -> str:
         """
-        Cleans and normalizes the price text obtained via .text.
-        Removes regular spaces, non-breaking spaces, thin spaces, and currency symbols.
+        Cleans and normalizes price text into a parseable numeric string.
+        Handles currency symbols, spaces, price ranges, and various decimal/thousand separators.
+        Returns empty string if no valid number found.
         """
         replacements = {
-            '\xa0': '',      # non-breaking space
-            '\u202f': '',    # thin non-breaking space
-            '\u2006': '',
+            '\xa0': '',    
+            '\u202f': '',    
+            '\u2006': '',    
             ' ': '', 
-            ' ': '',
-            '₽': '',
-            '€': '',
-            '$': '',
-            ',': '.',
-            'р.': '',
-            'руб.': '',
-            'RUB': '',
-            'EUR': '',
-            'USD': ''
+            ' ': '',         
+            '₽': '', '€': '', '$': '', '£': '', '¥': '', '₹': '',  
+            'р.': '', 'руб.': '', 'RUB': '', 'EUR': '', 'USD': '',  
+            'Â': '',  
         }
         cleaned = text.strip()
         for old, new in replacements.items():
             cleaned = cleaned.replace(old, new)
-        
-        if '-' in cleaned:  # Handle price ranges by selecting the first number
-            cleaned = cleaned.split('-')[0]
-        return cleaned
 
+        if '-' in cleaned:
+            parts = [p.strip() for p in cleaned.split('-')]
+            for part in parts:
+                if any(c.isdigit() for c in part):
+                    cleaned = part
+                    break
+
+        number_match = re.search(r'([+-]?[\d,.]+(?:[\.,]\d+)*)', cleaned)
+        if not number_match:
+            return ''
+        
+        number_str = number_match.group(1).replace(',', ',')  
+
+        separators = [c for c in number_str if c in ',.']
+        
+        if not separators:
+            return number_str
+
+        last_sep_index = max(number_str.rfind(','), number_str.rfind('.'))
+
+        integer_part = number_str[:last_sep_index].replace('.', '').replace(',', '')
+        decimal_part = number_str[last_sep_index+1:]
+
+        decimal_part = ''.join(filter(str.isdigit, decimal_part))
+
+        if len(decimal_part) == 3 and len(separators) == 1:
+            return f"{integer_part}{decimal_part}"
+        
+        cleaned_number = f"{integer_part}.{decimal_part}" if decimal_part else integer_part
+
+        if not integer_part and decimal_part:
+            cleaned_number = f"0.{decimal_part}"  # ".95" -> "0.95"
+        elif not integer_part and not decimal_part:
+            return ''
+
+        if not re.match(r'^[+-]?(?:\d+|\d*\.\d+)$', cleaned_number):
+            return ''
+
+        return cleaned_number
 
     def _take_screenshot(self, filename: str = 'error_screenshot'):
         """
