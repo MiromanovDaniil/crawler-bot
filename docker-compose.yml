@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: crawler-bot
+    volumes:
+      - .:/app
+      - uploads:/app/uploads
+    env_file:
+      - .env
+    restart: unless-stopped
+
+volumes:
+  uploads:
